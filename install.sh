@@ -48,13 +48,9 @@ print_header() {
 
 check_root() {
     if [[ $EUID -eq 0 ]]; then
-        print_warning "检测到以 root 用户运行"
-        print_warning "建议使用普通用户运行此脚本"
-        read -p "是否继续? (y/N) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
+        print_info "以 root 用户运行"
+    else
+        print_info "以普通用户运行"
     fi
 }
 
