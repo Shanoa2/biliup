@@ -21,7 +21,8 @@ BILIUP_VERSION="v0.2.4"
 PYTHON_MIN_VERSION="3.8"
 
 # 下载源配置（可选）
-BILIBILI_UPLOADER_URL="${BILIBILI_UPLOADER_URL:-https://raw.githubusercontent.com/your-repo/biliup/main/bilibili_uploader.py}"
+# 如果通过 GitHub 下载，会自动检测并使用同一仓库
+BILIBILI_UPLOADER_URL="${BILIBILI_UPLOADER_URL:-}"
 
 #===============================================================================
 # 工具函数
@@ -996,6 +997,28 @@ UNINSTALL_EOF
     print_success "辅助脚本创建完成"
 }
 
+detect_github_source() {
+    # 检测脚本是否从 GitHub 下载
+    # 通过检查环境变量或者进程信息来判断
+
+    # 方法 1: 检查 DOWNLOAD_URL 环境变量（curl 设置）
+    if [[ -n "$DOWNLOAD_URL" ]] && [[ "$DOWNLOAD_URL" == *"github"* ]]; then
+        echo "$DOWNLOAD_URL"
+        return 0
+    fi
+
+    # 方法 2: 检查 curl 的 User-Agent 或 Referer
+    # 这个方法在 curl | bash 时不太可靠，但可以作为备选
+
+    # 方法 3: 让用户通过环境变量指定
+    if [[ -n "$GITHUB_REPO" ]]; then
+        echo "https://raw.githubusercontent.com/${GITHUB_REPO}/main/bilibili_uploader.py"
+        return 0
+    fi
+
+    return 1
+}
+
 create_bilibili_uploader() {
     print_info "创建主程序 bilibili_uploader.py..."
 
@@ -1011,54 +1034,95 @@ create_bilibili_uploader() {
     local download_success=false
     local download_urls=()
 
-    # 1. 如果设置了自定义 URL
-    if [[ -n "$BILIBILI_UPLOADER_URL" ]] && [[ "$BILIBILI_UPLOADER_URL" != "https://raw.githubusercontent.com/your-repo/biliup/main/bilibili_uploader.py" ]]; then
+    # 1. 优先使用用户指定的 URL
+    if [[ -n "$BILIBILI_UPLOADER_URL" ]]; then
+        print_info "使用自定义 URL: $BILIBILI_UPLOADER_URL"
         download_urls+=("$BILIBILI_UPLOADER_URL")
     fi
 
-    # 2. 如果脚本是从 Web 下载运行的，尝试同源下载
-    # 检测是否通过 curl | bash 运行（通过 stdin 判断）
-    if [[ -n "${BASH_SOURCE[0]}" ]] && [[ "${BASH_SOURCE[0]}" == *"http"* ]] 2>/dev/null; then
-        local script_url="${BASH_SOURCE[0]}"
-        local base_url=$(dirname "$script_url")
-        download_urls+=("${base_url}/bilibili_uploader.py")
+    # 2. 检测 GitHub 源
+    local github_url=$(detect_github_source)
+    if [[ -n "$github_url" ]]; then
+        print_info "检测到 GitHub 源"
+        download_urls+=("$github_url")
     fi
 
-    # 3. 常见的托管位置
+    # 3. 如果设置了 GITHUB_REPO 环境变量
+    if [[ -n "$GITHUB_REPO" ]]; then
+        download_urls+=("https://raw.githubusercontent.com/${GITHUB_REPO}/main/bilibili_uploader.py")
+        download_urls+=("https://raw.githubusercontent.com/${GITHUB_REPO}/master/bilibili_uploader.py")
+    fi
+
+    # 4. 如果设置了 BILIUP_HOST（自托管）
     if [[ -n "$BILIUP_HOST" ]]; then
         download_urls+=("${BILIUP_HOST}/bilibili_uploader.py")
+    fi
+
+    # 如果没有任何下载源，提示用户
+    if [[ ${#download_urls[@]} -eq 0 ]]; then
+        print_warning "未检测到 bilibili_uploader.py 下载源"
+        print_info "请选择以下方法之一:"
+        echo ""
+        echo "  方法 1: 设置 GitHub 仓库（推荐）"
+        echo "    export GITHUB_REPO=your-username/your-repo"
+        echo "    然后重新运行 install.sh"
+        echo ""
+        echo "  方法 2: 直接指定下载 URL"
+        echo "    export BILIBILI_UPLOADER_URL=https://your-url.com/bilibili_uploader.py"
+        echo "    然后重新运行 install.sh"
+        echo ""
+        echo "  方法 3: 手动下载后放置"
+        echo "    将 bilibili_uploader.py 复制到: $INSTALL_DIR/"
+        echo "    然后重新运行 install.sh"
+        echo ""
+        echo "  方法 4: 从 GitHub 一键安装（推荐）"
+        echo "    curl -fsSL https://raw.githubusercontent.com/your-username/your-repo/main/install.sh | GITHUB_REPO=your-username/your-repo bash"
+        echo ""
+        return 0
     fi
 
     # 尝试每个 URL
     for url in "${download_urls[@]}"; do
         print_info "尝试从 $url 下载..."
         if curl -fsSL "$url" -o bilibili_uploader.py 2>/dev/null; then
-            # 验证文件是否有效（至少包含 Python shebang 或 import）
-            if grep -q "import\|def\|class" bilibili_uploader.py 2>/dev/null; then
-                print_success "bilibili_uploader.py 下载成功"
-                download_success=true
-                break
+            # 验证文件是否有效（至少包含 Python 关键字）
+            if head -100 bilibili_uploader.py | grep -q "import\|def\|class" 2>/dev/null; then
+                # 进一步验证文件大小（应该大于 10KB）
+                local file_size=$(wc -c < bilibili_uploader.py)
+                if [[ $file_size -gt 10000 ]]; then
+                    print_success "bilibili_uploader.py 下载成功 ($(numfmt --to=iec $file_size))"
+                    download_success=true
+                    break
+                else
+                    print_warning "下载的文件过小 ($file_size bytes)，可能不是有效的 Python 文件"
+                    rm -f bilibili_uploader.py
+                fi
             else
-                print_warning "下载的文件似乎无效，尝试下一个源..."
+                print_warning "下载的文件不是有效的 Python 文件，尝试下一个源..."
                 rm -f bilibili_uploader.py
             fi
+        else
+            print_warning "下载失败，尝试下一个源..."
         fi
     done
 
     if [[ "$download_success" == "false" ]]; then
-        print_warning "bilibili_uploader.py 自动下载失败"
-        print_info "请手动完成以下步骤:"
+        print_error "bilibili_uploader.py 自动下载失败"
         echo ""
-        echo "  方法 1: 直接放置文件"
-        echo "    将 bilibili_uploader.py 复制到: $INSTALL_DIR/"
+        print_info "尝试的 URL:"
+        for url in "${download_urls[@]}"; do
+            echo "  - $url"
+        done
         echo ""
-        echo "  方法 2: 手动下载"
-        echo "    curl -O <你的下载地址>/bilibili_uploader.py"
-        echo "    mv bilibili_uploader.py $INSTALL_DIR/"
+        print_info "解决方法:"
         echo ""
-        echo "  方法 3: 设置环境变量后重新运行"
-        echo "    export BILIBILI_UPLOADER_URL=<你的下载地址>/bilibili_uploader.py"
-        echo "    ./install.sh"
+        echo "  1. 确认你的 GitHub 仓库中包含 bilibili_uploader.py"
+        echo "  2. 使用正确的仓库名重试:"
+        echo "     curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/install.sh | GITHUB_REPO=YOUR_USERNAME/YOUR_REPO bash"
+        echo ""
+        echo "  3. 或者手动下载后继续:"
+        echo "     cd $INSTALL_DIR"
+        echo "     curl -O https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/bilibili_uploader.py"
         echo ""
 
         # 不失败，让用户可以稍后手动添加
