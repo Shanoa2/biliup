@@ -2,6 +2,7 @@
 #===============================================================================
 # Bilibili 录播自动上传工具 - 一键安装脚本
 # 支持 Debian/Ubuntu/CentOS/RHEL/Fedora/Arch Linux
+# 自包含版本 - 无需额外下载文件
 #===============================================================================
 
 set -e  # 遇到错误立即退出
@@ -18,6 +19,9 @@ NC='\033[0m' # No Color
 INSTALL_DIR="${HOME}/biliup"
 BILIUP_VERSION="v0.2.4"
 PYTHON_MIN_VERSION="3.8"
+
+# 下载源配置（可选）
+BILIBILI_UPLOADER_URL="${BILIBILI_UPLOADER_URL:-https://raw.githubusercontent.com/your-repo/biliup/main/bilibili_uploader.py}"
 
 #===============================================================================
 # 工具函数
@@ -278,10 +282,24 @@ install_biliup() {
     fi
 }
 
+create_requirements_file() {
+    print_info "创建 requirements.txt..."
+
+    cat > "$INSTALL_DIR/requirements.txt" <<'REQUIREMENTS_EOF'
+questionary>=2.0.0
+rich>=13.0.0
+REQUIREMENTS_EOF
+
+    print_success "requirements.txt 创建完成"
+}
+
 install_python_dependencies() {
     print_info "安装 Python 依赖..."
 
     cd "$INSTALL_DIR"
+
+    # 创建 requirements.txt（自包含）
+    create_requirements_file
 
     # 尝试使用 --break-system-packages
     if python3 -m pip install -r requirements.txt --break-system-packages 2>/dev/null; then
@@ -296,6 +314,755 @@ install_python_dependencies() {
             print_info "请手动运行: pip3 install -r requirements.txt"
             return 1
         fi
+    fi
+}
+
+create_shell_scripts() {
+    print_info "创建辅助脚本..."
+
+    cd "$INSTALL_DIR"
+
+    # 创建 setup.sh
+    cat > setup.sh <<'SETUP_EOF'
+#!/bin/bash
+#===============================================================================
+# Bilibili 录播自动上传工具 - 配置向导
+# 用于初次配置或重新配置 rclone 和 B站登录
+#===============================================================================
+
+set -e
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+print_header() {
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║  Bilibili 录播自动上传工具 - 配置向导                   ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+}
+
+show_menu() {
+    echo ""
+    echo -e "${CYAN}请选择要配置的项目:${NC}"
+    echo "  1) 配置 rclone 云盘"
+    echo "  2) 登录 B站账号"
+    echo "  3) 测试配置"
+    echo "  4) 修改备份路径"
+    echo "  5) 修改上传分区和标签"
+    echo "  6) 全部重新配置"
+    echo "  0) 退出"
+    echo ""
+    read -p "请输入选项 [0-6]: " choice
+
+    case $choice in
+        1) configure_rclone ;;
+        2) configure_bilibili_login ;;
+        3) test_configuration ;;
+        4) modify_backup_path ;;
+        5) modify_upload_settings ;;
+        6) full_reconfigure ;;
+        0) exit 0 ;;
+        *) print_error "无效选项"; show_menu ;;
+    esac
+}
+
+configure_rclone() {
+    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  配置 rclone 云盘${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+
+    # 检查是否已有 remote
+    EXISTING_REMOTES=$(rclone listremotes 2>/dev/null | sed 's/:$//' || echo "")
+
+    if [[ -n "$EXISTING_REMOTES" ]]; then
+        print_info "检测到已有的 rclone remote:"
+        echo "$EXISTING_REMOTES" | nl
+        echo ""
+        echo "  0) 创建新的 remote"
+        echo ""
+
+        read -p "请选择 remote (输入序号, 0=创建新的): " REMOTE_NUM
+
+        if [[ "$REMOTE_NUM" == "0" ]]; then
+            print_info "打开 rclone 配置界面..."
+            rclone config
+            # 重新获取列表
+            EXISTING_REMOTES=$(rclone listremotes 2>/dev/null | sed 's/:$//' || echo "")
+            if [[ -n "$EXISTING_REMOTES" ]]; then
+                echo "请选择刚才配置的 remote:"
+                echo "$EXISTING_REMOTES" | nl
+                read -r REMOTE_NUM
+            fi
+        fi
+
+        REMOTE_NAME=$(echo "$EXISTING_REMOTES" | sed -n "${REMOTE_NUM}p")
+
+        if [[ -n "$REMOTE_NAME" ]]; then
+            print_success "选择的 remote: $REMOTE_NAME"
+
+            # 更新 config.json
+            sed -i "s/\"remote\": \".*\"/\"remote\": \"$REMOTE_NAME\"/" "$SCRIPT_DIR/config.json"
+
+            # 询问备份路径
+            CURRENT_PATH=$(grep '"backup_path":' "$SCRIPT_DIR/config.json" | sed 's/.*"backup_path": "\(.*\)".*/\1/')
+            read -p "请输入云盘中的备份路径 (当前: $CURRENT_PATH): " BACKUP_PATH
+            BACKUP_PATH=${BACKUP_PATH:-$CURRENT_PATH}
+            sed -i "s|\"backup_path\": \".*\"|\"backup_path\": \"$BACKUP_PATH\"|" "$SCRIPT_DIR/config.json"
+
+            print_success "rclone 配置已更新"
+        else
+            print_warning "无效的选择"
+        fi
+    else
+        print_info "未检测到 rclone remote，打开配置界面..."
+        rclone config
+
+        EXISTING_REMOTES=$(rclone listremotes 2>/dev/null | sed 's/:$//' || echo "")
+        if [[ -n "$EXISTING_REMOTES" ]]; then
+            print_info "请选择刚才配置的 remote:"
+            echo "$EXISTING_REMOTES" | nl
+            read -r REMOTE_NUM
+            REMOTE_NAME=$(echo "$EXISTING_REMOTES" | sed -n "${REMOTE_NUM}p")
+
+            if [[ -n "$REMOTE_NAME" ]]; then
+                sed -i "s/\"remote\": \".*\"/\"remote\": \"$REMOTE_NAME\"/" "$SCRIPT_DIR/config.json"
+
+                read -p "请输入云盘中的备份路径 (默认: backup): " BACKUP_PATH
+                BACKUP_PATH=${BACKUP_PATH:-backup}
+                sed -i "s|\"backup_path\": \".*\"|\"backup_path\": \"$BACKUP_PATH\"|" "$SCRIPT_DIR/config.json"
+
+                print_success "rclone 配置已保存"
+            fi
+        fi
+    fi
+
+    show_menu
+}
+
+configure_bilibili_login() {
+    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  登录 B站账号${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+
+    cd "$SCRIPT_DIR"
+
+    if [[ -f "cookies.json" ]]; then
+        print_info "检测到已有登录信息"
+        read -p "是否重新登录? (Y/n) " -n 1 -r
+        echo
+
+        if [[ ! $REPLY =~ ^[Yy]$ ]] && [[ ! -z $REPLY ]]; then
+            print_info "保持现有登录"
+            show_menu
+            return 0
+        fi
+
+        # 备份旧的 cookies
+        mv cookies.json cookies.json.bak
+        print_info "已备份旧的登录信息到 cookies.json.bak"
+    fi
+
+    print_info "打开 biliup 登录界面..."
+    print_info "推荐使用扫码登录"
+    echo ""
+
+    if /usr/local/bin/biliup login; then
+        if [[ -f "cookies.json" ]]; then
+            print_success "B站登录成功"
+            rm -f cookies.json.bak
+        else
+            print_error "登录失败"
+            if [[ -f "cookies.json.bak" ]]; then
+                mv cookies.json.bak cookies.json
+                print_info "已恢复旧的登录信息"
+            fi
+        fi
+    else
+        print_error "登录过程出错"
+        if [[ -f "cookies.json.bak" ]]; then
+            mv cookies.json.bak cookies.json
+            print_info "已恢复旧的登录信息"
+        fi
+    fi
+
+    show_menu
+}
+
+test_configuration() {
+    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  配置测试${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+
+    cd "$SCRIPT_DIR"
+
+    # 测试 rclone
+    print_info "测试 rclone 连接..."
+    REMOTE_NAME=$(grep '"remote":' config.json | sed 's/.*"remote": "\(.*\)".*/\1/')
+    BACKUP_PATH=$(grep '"backup_path":' config.json | sed 's/.*"backup_path": "\(.*\)".*/\1/')
+
+    if [[ "$REMOTE_NAME" == "your_remote_name" ]]; then
+        print_warning "rclone remote 未配置"
+    else
+        echo "  Remote: $REMOTE_NAME:$BACKUP_PATH"
+        if rclone lsd "${REMOTE_NAME}:${BACKUP_PATH}" --max-depth 1 2>/dev/null; then
+            print_success "rclone 连接正常，文件夹列表:"
+            rclone lsd "${REMOTE_NAME}:${BACKUP_PATH}" --max-depth 1 | tail -5
+        else
+            print_error "rclone 连接失败"
+            print_info "请检查: 1) remote 是否正确 2) 备份路径是否存在 3) 网络连接"
+        fi
+    fi
+
+    echo ""
+
+    # 测试 B站登录
+    print_info "测试 B站登录状态..."
+    if [[ ! -f "cookies.json" ]]; then
+        print_warning "未找到登录信息 (cookies.json)"
+    else
+        if /usr/local/bin/biliup -u "$SCRIPT_DIR/cookies.json" list --max-pages 1 2>/dev/null >/dev/null; then
+            print_success "B站登录状态有效"
+            print_info "最近投稿:"
+            /usr/local/bin/biliup -u "$SCRIPT_DIR/cookies.json" list --max-pages 1 | head -10
+        else
+            print_error "B站登录状态无效"
+            print_info "请重新登录"
+        fi
+    fi
+
+    show_menu
+}
+
+modify_backup_path() {
+    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  修改备份路径${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+
+    CURRENT_PATH=$(grep '"backup_path":' "$SCRIPT_DIR/config.json" | sed 's/.*"backup_path": "\(.*\)".*/\1/')
+    print_info "当前备份路径: $CURRENT_PATH"
+
+    read -p "请输入新的备份路径: " NEW_PATH
+
+    if [[ -n "$NEW_PATH" ]]; then
+        sed -i "s|\"backup_path\": \".*\"|\"backup_path\": \"$NEW_PATH\"|" "$SCRIPT_DIR/config.json"
+        print_success "备份路径已更新为: $NEW_PATH"
+
+        # 测试新路径
+        REMOTE_NAME=$(grep '"remote":' "$SCRIPT_DIR/config.json" | sed 's/.*"remote": "\(.*\)".*/\1/')
+        print_info "测试新路径..."
+        if rclone lsd "${REMOTE_NAME}:${NEW_PATH}" --max-depth 1 >/dev/null 2>&1; then
+            print_success "新路径连接成功"
+        else
+            print_warning "无法连接到新路径，请确认路径是否存在"
+        fi
+    else
+        print_info "已取消"
+    fi
+
+    show_menu
+}
+
+modify_upload_settings() {
+    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  修改上传分区和标签${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+
+    CURRENT_TID=$(grep '"default_tid":' "$SCRIPT_DIR/config.json" | sed 's/.*"default_tid": \(.*\),/\1/')
+    print_info "当前默认分区: $CURRENT_TID"
+
+    print_info "常用分区ID:"
+    echo "  171 - 虚拟主播日常"
+    echo "  17  - 单机游戏"
+    echo "  65  - 网络游戏"
+    echo "  136 - 生活·日常"
+    echo "  27  - 综合"
+    echo ""
+
+    read -p "请输入新的分区ID (直接回车跳过): " NEW_TID
+
+    if [[ -n "$NEW_TID" ]]; then
+        sed -i "s/\"default_tid\": .*/\"default_tid\": $NEW_TID,/" "$SCRIPT_DIR/config.json"
+        print_success "分区已更新为: $NEW_TID"
+    fi
+
+    read -p "是否修改默认标签? (y/N) " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_info "请输入标签 (逗号分隔，如: 录播,虚拟主播,游戏)"
+        read -p "标签: " NEW_TAGS
+
+        if [[ -n "$NEW_TAGS" ]]; then
+            # 将逗号分隔的字符串转换为 JSON 数组
+            TAG_ARRAY=$(echo "$NEW_TAGS" | sed 's/,/", "/g' | sed 's/^/"/' | sed 's/$/"/')
+            sed -i "s/\"default_tags\": \[.*\]/\"default_tags\": [$TAG_ARRAY]/" "$SCRIPT_DIR/config.json"
+            print_success "标签已更新"
+        fi
+    fi
+
+    show_menu
+}
+
+full_reconfigure() {
+    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  全部重新配置${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+
+    print_warning "这将重新配置所有设置"
+    read -p "确定要继续吗? (y/N) " -n 1 -r
+    echo
+
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        show_menu
+        return 0
+    fi
+
+    configure_rclone
+    configure_bilibili_login
+    test_configuration
+}
+
+main() {
+    print_header
+
+    # 检查必要的命令
+    for cmd in rclone; do
+        if ! command -v $cmd &> /dev/null; then
+            print_error "$cmd 未安装"
+            print_info "请先运行 install.sh 安装"
+            exit 1
+        fi
+    done
+
+    if [[ ! -f "/usr/local/bin/biliup" ]]; then
+        print_error "biliup 未安装"
+        print_info "请先运行 install.sh 安装"
+        exit 1
+    fi
+
+    # 检查配置文件
+    if [[ ! -f "$SCRIPT_DIR/config.json" ]]; then
+        print_error "配置文件不存在: config.json"
+        exit 1
+    fi
+
+    show_menu
+}
+
+main "$@"
+SETUP_EOF
+
+    # 创建 run.sh
+    cat > run.sh <<'RUN_EOF'
+#!/bin/bash
+#===============================================================================
+# Bilibili 录播自动上传工具 - 快速启动脚本
+#===============================================================================
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# 检查依赖
+check_dependencies() {
+    local missing_deps=()
+
+    if ! command -v python3 &> /dev/null; then
+        missing_deps+=("python3")
+    fi
+
+    if ! command -v rclone &> /dev/null; then
+        missing_deps+=("rclone")
+    fi
+
+    if ! command -v ffmpeg &> /dev/null; then
+        missing_deps+=("ffmpeg")
+    fi
+
+    if [[ ! -f "/usr/local/bin/biliup" ]]; then
+        missing_deps+=("biliup")
+    fi
+
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        print_error "缺少依赖: ${missing_deps[*]}"
+        print_info "请先运行 install.sh 安装依赖"
+        exit 1
+    fi
+}
+
+# 检查配置
+check_config() {
+    if [[ ! -f "$SCRIPT_DIR/config.json" ]]; then
+        print_error "配置文件不存在: config.json"
+        print_info "请先运行 setup.sh 进行配置"
+        exit 1
+    fi
+
+    # 检查是否已配置 remote
+    REMOTE_NAME=$(grep '"remote":' "$SCRIPT_DIR/config.json" | sed 's/.*"remote": "\(.*\)".*/\1/')
+    if [[ "$REMOTE_NAME" == "your_remote_name" ]]; then
+        print_error "rclone remote 未配置"
+        print_info "请先运行 setup.sh 进行配置"
+        exit 1
+    fi
+
+    # 检查是否已登录 B站
+    if [[ ! -f "$SCRIPT_DIR/cookies.json" ]]; then
+        print_error "未找到 B站 登录信息"
+        print_info "请先运行 setup.sh 登录 B站账号"
+        exit 1
+    fi
+}
+
+# 主函数
+main() {
+    cd "$SCRIPT_DIR"
+
+    print_info "启动 Bilibili 录播自动上传工具..."
+
+    # 检查
+    check_dependencies
+    check_config
+
+    print_success "环境检查通过"
+
+    # 启动主程序
+    python3 bilibili_uploader.py
+}
+
+main "$@"
+RUN_EOF
+
+    # 创建 uninstall.sh
+    cat > uninstall.sh <<'UNINSTALL_EOF'
+#!/bin/bash
+#===============================================================================
+# Bilibili 录播自动上传工具 - 卸载脚本
+#===============================================================================
+
+set -e
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+print_header() {
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║  Bilibili 录播自动上传工具 - 卸载程序                   ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+}
+
+confirm_uninstall() {
+    echo -e "${YELLOW}警告: 这将卸载 Bilibili 录播自动上传工具${NC}\n"
+
+    echo "将执行以下操作:"
+    echo "  - 停止并删除 systemd 服务（如果存在）"
+    echo "  - 删除快捷命令"
+    echo "  - 删除项目文件（可选）"
+    echo ""
+
+    read -p "确定要继续吗? (yes/NO) " -r
+    echo
+
+    if [[ ! $REPLY == "yes" ]]; then
+        print_info "已取消卸载"
+        exit 0
+    fi
+}
+
+stop_service() {
+    print_info "停止 systemd 服务..."
+
+    if systemctl is-active --quiet biliup-uploader 2>/dev/null; then
+        sudo systemctl stop biliup-uploader
+        print_success "服务已停止"
+    fi
+
+    if systemctl is-enabled --quiet biliup-uploader 2>/dev/null; then
+        sudo systemctl disable biliup-uploader
+        print_success "已禁用开机自启"
+    fi
+
+    if [[ -f "/etc/systemd/system/biliup-uploader.service" ]]; then
+        sudo rm /etc/systemd/system/biliup-uploader.service
+        sudo systemctl daemon-reload
+        print_success "服务文件已删除"
+    fi
+}
+
+remove_shortcuts() {
+    print_info "删除快捷命令..."
+
+    for bin_dir in "$HOME/.local/bin" "$HOME/bin"; do
+        if [[ -L "$bin_dir/biliup-start" ]]; then
+            rm "$bin_dir/biliup-start"
+            print_success "已删除: $bin_dir/biliup-start"
+        fi
+    done
+}
+
+remove_biliup() {
+    read -p "是否卸载 biliup-rs? (y/N) " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if [[ -f "/usr/local/bin/biliup" ]]; then
+            sudo rm /usr/local/bin/biliup
+            print_success "biliup-rs 已卸载"
+        fi
+    else
+        print_info "保留 biliup-rs"
+    fi
+}
+
+remove_system_deps() {
+    read -p "是否卸载系统依赖 (rclone, ffmpeg)? (y/N) " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_warning "请根据你的系统类型手动卸载:"
+        echo "  Debian/Ubuntu: sudo apt-get remove rclone ffmpeg"
+        echo "  CentOS/RHEL:   sudo yum remove rclone ffmpeg"
+        echo "  Arch Linux:    sudo pacman -R rclone ffmpeg"
+    else
+        print_info "保留系统依赖"
+    fi
+}
+
+remove_project_files() {
+    echo ""
+    print_warning "项目文件位于: $SCRIPT_DIR"
+
+    echo ""
+    echo "文件删除选项:"
+    echo "  1) 删除所有文件（包括配置和历史记录）"
+    echo "  2) 仅删除程序文件，保留配置和历史记录"
+    echo "  3) 不删除任何文件"
+    echo ""
+
+    read -p "请选择 [1-3]: " -n 1 -r
+    echo
+
+    case $REPLY in
+        1)
+            print_warning "即将删除所有文件，包括:"
+            echo "  - config.json (配置文件)"
+            echo "  - cookies.json (B站登录信息)"
+            echo "  - upload_history.json (上传历史)"
+            echo "  - failed_uploads.json (失败记录)"
+            echo "  - upload.log (日志文件)"
+            echo ""
+
+            read -p "确认删除所有文件? (yes/NO) " -r
+            echo
+
+            if [[ $REPLY == "yes" ]]; then
+                cd "$HOME"
+                rm -rf "$SCRIPT_DIR"
+                print_success "所有文件已删除"
+            else
+                print_info "已取消删除"
+            fi
+            ;;
+        2)
+            print_info "保留配置和历史记录，删除程序文件..."
+
+            # 备份重要文件
+            mkdir -p "$SCRIPT_DIR.backup"
+            for file in config.json cookies.json upload_history.json failed_uploads.json upload.log; do
+                if [[ -f "$SCRIPT_DIR/$file" ]]; then
+                    mv "$SCRIPT_DIR/$file" "$SCRIPT_DIR.backup/"
+                fi
+            done
+
+            # 删除项目目录
+            rm -rf "$SCRIPT_DIR"
+
+            # 恢复备份文件
+            mv "$SCRIPT_DIR.backup" "$SCRIPT_DIR"
+
+            print_success "程序文件已删除，配置和历史已保留在: $SCRIPT_DIR"
+            ;;
+        3)
+            print_info "保留所有文件"
+            ;;
+        *)
+            print_info "无效选项，保留所有文件"
+            ;;
+    esac
+}
+
+main() {
+    print_header
+
+    confirm_uninstall
+
+    # 停止服务
+    stop_service
+
+    # 删除快捷命令
+    remove_shortcuts
+
+    # 卸载 biliup
+    remove_biliup
+
+    # 卸载系统依赖
+    remove_system_deps
+
+    # 删除项目文件
+    remove_project_files
+
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║                  卸载完成！                               ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    if [[ -d "$SCRIPT_DIR" ]]; then
+        print_info "保留的文件位于: $SCRIPT_DIR"
+    fi
+}
+
+main "$@"
+UNINSTALL_EOF
+
+    # 设置执行权限
+    chmod +x setup.sh run.sh uninstall.sh
+
+    print_success "辅助脚本创建完成"
+}
+
+create_bilibili_uploader() {
+    print_info "创建主程序 bilibili_uploader.py..."
+
+    cd "$INSTALL_DIR"
+
+    # 如果当前目录已有 bilibili_uploader.py，保留它
+    if [[ -f "bilibili_uploader.py" ]]; then
+        print_success "检测到现有的 bilibili_uploader.py，保留使用"
+        return 0
+    fi
+
+    # 尝试从多个源下载
+    local download_success=false
+    local download_urls=()
+
+    # 1. 如果设置了自定义 URL
+    if [[ -n "$BILIBILI_UPLOADER_URL" ]] && [[ "$BILIBILI_UPLOADER_URL" != "https://raw.githubusercontent.com/your-repo/biliup/main/bilibili_uploader.py" ]]; then
+        download_urls+=("$BILIBILI_UPLOADER_URL")
+    fi
+
+    # 2. 如果脚本是从 Web 下载运行的，尝试同源下载
+    # 检测是否通过 curl | bash 运行（通过 stdin 判断）
+    if [[ -n "${BASH_SOURCE[0]}" ]] && [[ "${BASH_SOURCE[0]}" == *"http"* ]] 2>/dev/null; then
+        local script_url="${BASH_SOURCE[0]}"
+        local base_url=$(dirname "$script_url")
+        download_urls+=("${base_url}/bilibili_uploader.py")
+    fi
+
+    # 3. 常见的托管位置
+    if [[ -n "$BILIUP_HOST" ]]; then
+        download_urls+=("${BILIUP_HOST}/bilibili_uploader.py")
+    fi
+
+    # 尝试每个 URL
+    for url in "${download_urls[@]}"; do
+        print_info "尝试从 $url 下载..."
+        if curl -fsSL "$url" -o bilibili_uploader.py 2>/dev/null; then
+            # 验证文件是否有效（至少包含 Python shebang 或 import）
+            if grep -q "import\|def\|class" bilibili_uploader.py 2>/dev/null; then
+                print_success "bilibili_uploader.py 下载成功"
+                download_success=true
+                break
+            else
+                print_warning "下载的文件似乎无效，尝试下一个源..."
+                rm -f bilibili_uploader.py
+            fi
+        fi
+    done
+
+    if [[ "$download_success" == "false" ]]; then
+        print_warning "bilibili_uploader.py 自动下载失败"
+        print_info "请手动完成以下步骤:"
+        echo ""
+        echo "  方法 1: 直接放置文件"
+        echo "    将 bilibili_uploader.py 复制到: $INSTALL_DIR/"
+        echo ""
+        echo "  方法 2: 手动下载"
+        echo "    curl -O <你的下载地址>/bilibili_uploader.py"
+        echo "    mv bilibili_uploader.py $INSTALL_DIR/"
+        echo ""
+        echo "  方法 3: 设置环境变量后重新运行"
+        echo "    export BILIBILI_UPLOADER_URL=<你的下载地址>/bilibili_uploader.py"
+        echo "    ./install.sh"
+        echo ""
+
+        # 不失败，让用户可以稍后手动添加
+        return 0
     fi
 }
 
@@ -641,6 +1408,8 @@ main() {
 
     # 创建项目
     create_project_structure
+    create_shell_scripts
+    create_bilibili_uploader
     install_python_dependencies
 
     # 配置向导
