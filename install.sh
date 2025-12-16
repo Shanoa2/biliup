@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 
 # 配置变量
 INSTALL_DIR="${HOME}/biliup"
-BILIUP_VERSION="v0.2.4"
+BILIUP_VERSION="v1.1.28"
 PYTHON_MIN_VERSION="3.8"
 
 # 下载源配置（可选）
@@ -260,23 +260,30 @@ install_dependencies_generic() {
 }
 
 install_biliup() {
-    print_info "安装 biliup-rs..."
+    print_info "安装 biliup..."
 
-    BILIUP_URL="https://github.com/ForgQi/biliup-rs/releases/download/${BILIUP_VERSION}/biliupR-${BILIUP_VERSION}-${BILIUP_ARCH}-linux.tar.xz"
+    BILIUP_URL="https://github.com/biliup/biliup/releases/download/${BILIUP_VERSION}/biliupR-${BILIUP_VERSION}-${BILIUP_ARCH}-linux.tar.xz"
     TEMP_DIR=$(mktemp -d)
 
-    print_info "下载 biliup-rs ${BILIUP_VERSION} (${BILIUP_ARCH})..."
+    print_info "下载 biliup ${BILIUP_VERSION} (${BILIUP_ARCH})..."
     if curl -fsSL "$BILIUP_URL" -o "$TEMP_DIR/biliup.tar.xz"; then
         print_info "解压文件..."
         tar -xf "$TEMP_DIR/biliup.tar.xz" -C "$TEMP_DIR"
 
         print_info "安装到 /usr/local/bin/biliup..."
-        sudo install -m755 "$TEMP_DIR/biliupR-${BILIUP_VERSION}-${BILIUP_ARCH}-linux/biliup" /usr/local/bin/biliup
-
-        rm -rf "$TEMP_DIR"
-        print_success "biliup-rs 安装成功"
+        # 查找解压后的 biliup 可执行文件
+        BILIUP_EXEC=$(find "$TEMP_DIR" -name "biliup" -type f -executable | head -1)
+        if [[ -n "$BILIUP_EXEC" ]]; then
+            sudo install -m755 "$BILIUP_EXEC" /usr/local/bin/biliup
+            rm -rf "$TEMP_DIR"
+            print_success "biliup 安装成功"
+        else
+            print_error "未找到 biliup 可执行文件"
+            rm -rf "$TEMP_DIR"
+            return 1
+        fi
     else
-        print_error "下载 biliup-rs 失败"
+        print_error "下载 biliup 失败"
         print_info "请检查网络连接或手动下载安装"
         print_info "下载地址: $BILIUP_URL"
         return 1
