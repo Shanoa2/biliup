@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+venv/
+env/
+
+# 项目特定文件
+cookies.json
+upload_history.json
+failed_uploads.json
+*.log
+temp/
+downloads/
+covers/
+splits/
+
+# 配置文件（包含敏感信息）
+config.json
+
+# 备份文件
+*.backup
+*.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
+
+# 测试文件
+test-*/
+*.test
